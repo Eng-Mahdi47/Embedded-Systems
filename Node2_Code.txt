@@ -1,0 +1,163 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+
+// --- Network and Communication Settings ---
+const char* ssid = "";           // Fill this
+const char* password = "";   // Fill this
+const char* tb_server = "thingsboard.cloud";
+const char* access_token = "cnVhEGTJ2hB07N5bdSwh";  // Get from ThingsBoard for Device #1
+
+// --- Pin Definitions (ESP32 #1: MQ-3, PM10, MQ-137) ---
+const int mq3_pin = 35;        // MQ-3 (Alcohol/Gas Sensor)
+const int pm10_pin = 12;       // PM 10 (DSM501A)
+const int mq137_pin = 34;      // MQ-137 (Ammonia/NH3 Sensor)
+
+// --- MQ-3 Calibration Constants ---
+const float MQ3_LOAD_RESISTANCE = 10000.0;
+const float MQ3_CLEAN_AIR_RATIO = 1.0;
+const float MQ3_RO = 10000.0;  // Calibrate this value
+
+// --- MQ-137 Calibration Constants ---
+const float MQ137_LOAD_RESISTANCE = 10000.0;
+const float MQ137_RO = 10000.0;  // Calibrate this value for MQ-137
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+// Function to read PM10 dust sensor (PWM)
+float getPM10Ratio() {
+  unsigned long duration = pulseIn(pm10_pin, LOW, 1000000); 
+  if (duration == 0) return 0;
+  return (duration / 10000.0); // Convert to percentage
+}
+
+// Calculate PM10 concentration (µg/m³)
+float calculatePM10(float dustRatio) {
+  return dustRatio * 1500.0;  // Adjust based on your sensor datasheet
+}
+
+// Read MQ-3 Alcohol Sensor
+float readMQ3() {
+  int rawValue = analogRead(mq3_pin);
+  float voltage = (rawValue / 4095.0) * 3.3;
+  float rs = ((3.3 - voltage) / voltage) * MQ3_LOAD_RESISTANCE;
+  float ratio = rs / MQ3_RO;
+  float alcohol_ppm = 0;
+  if (ratio > 0 && ratio < 10) {
+    alcohol_ppm = 1000.0 * exp(-2.3 * ratio);
+  }
+  return alcohol_ppm;
+}
+
+// Read MQ-137 Ammonia Sensor
+float readMQ137() {
+  int rawValue = analogRead(mq137_pin);
+  float voltage = (rawValue / 4095.0) * 3.3;
+  float rs = ((3.3 - voltage) / voltage) * MQ137_LOAD_RESISTANCE;
+  float ratio = rs / MQ137_RO;
+  
+  // MQ-137 detects ammonia (NH3) in ppm
+  // Typical range: 5-500 ppm
+  float nh3_ppm = 0;
+  if (ratio > 0 && ratio < 10) {
+    // Approximation formula for MQ-137
+    nh3_ppm = 100.0 * exp(-1.5 * ratio);  // Adjust formula as needed
+  }
+  return nh3_ppm;
+}
+
+// Get alcohol level description
+String getAlcoholLevel(float ppm) {
+  if (ppm < 25) return "Normal";
+  if (ppm < 50) return "Low";
+  if (ppm < 100) return "Medium";
+  if (ppm < 200) return "High";
+  return "Very High";
+}
+
+// Get ammonia level description
+String getAmmoniaLevel(float ppm) {
+  if (ppm < 10) return "Safe";
+  if (ppm < 25) return "Low";
+  if (ppm < 50) return "Moderate";
+  if (ppm < 100) return "High";
+  return "Dangerous";
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(pm10_pin, INPUT);
+  pinMode(mq3_pin, INPUT);
+  pinMode(mq137_pin, INPUT);
+  
+  // Connect to WiFi
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) { 
+    delay(500); 
+    Serial.print("."); 
+  }
+  Serial.println("\nConnected to WiFi");
+
+  client.setServer(tb_server, 1883);
+}
+
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("Connecting to ThingsBoard...");
+    if (client.connect("ESP32_Device_1", access_token, NULL)) {
+      Serial.println("Success!");
+    } else {
+      Serial.print("Failed, rc="); 
+      Serial.print(client.state());
+      delay(5000);
+    }
+  }
+}
+
+void loop() {
+  if (!client.connected()) reconnect();
+  client.loop();
+
+  // Read all sensors on ESP32 #1
+  float alcoholPPM = readMQ3();
+  String alcoholLevel = getAlcoholLevel(alcoholPPM);
+  
+  float pm10Ratio = getPM10Ratio();
+  float pm10Conc = calculatePM10(pm10Ratio);
+  
+  float ammoniaPPM = readMQ137();
+  String ammoniaLevel = getAmmoniaLevel(ammoniaPPM);
+
+  // Prepare JSON data
+  StaticJsonDocument<300> doc;
+  doc["MQ-3_Alcohol"] = alcoholPPM;
+  doc["Alcohol_Level"] = alcoholLevel;
+  doc["PM10_Ratio"] = pm10Ratio;
+  doc["PM10_Conc"] = pm10Conc;
+  doc["MQ-137_NH3"] = ammoniaPPM;
+  doc["Ammonia_Level"] = ammoniaLevel;
+
+  char buffer[300];
+  serializeJson(doc, buffer);
+
+  // Send data to ThingsBoard
+  if (client.publish("v1/devices/me/telemetry", buffer)) {
+    Serial.println("Data Sent: " + String(buffer));
+    
+    // Warnings
+    if (alcoholPPM > 100) {
+      Serial.println("WARNING: High alcohol concentration detected!");
+    }
+    if (pm10Conc > 154) {
+      Serial.println("WARNING: High PM10 levels detected!");
+    }
+    if (ammoniaPPM > 50) {
+      Serial.println("WARNING: High ammonia concentration detected!");
+    }
+  } else {
+    Serial.println("Failed to send data");
+  }
+
+  delay(5000);
+}

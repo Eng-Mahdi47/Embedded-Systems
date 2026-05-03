@@ -1,0 +1,82 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+
+// Networks connections
+const char* ssid = "SALAM-4G";
+const char* password = "M103@092";
+const char* tb_server = "thingsboard.cloud";
+const char* access_token = "d8bfsgS6YwSSagSRq7yl"; 
+
+// pins decelerations 
+const int mq_pin = 34; // MQ-135
+const int pm_pin = 13; // PM 2.5 (DSM501A)
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+// PM(dust sensor) function
+float getDustRatio(int pin) {
+  unsigned long duration = pulseIn(pin, LOW, 1000000); 
+  if (duration == 0) return 0;
+  return (duration / 10000.0);
+}
+
+// Main code program
+void setup() {
+  Serial.begin(115200);
+  pinMode(pm_pin, INPUT);
+  
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) { 
+    delay(500); 
+    Serial.print("."); 
+  }
+
+  Serial.println("\nConnected to WiFi");
+
+  client.setServer(tb_server, 1883);
+}
+
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("Connecting to ThingsBoard...");
+    if (client.connect("ESP32_Device", access_token, NULL)) {
+      Serial.println("Success!");
+    } else {
+      Serial.print("Failed, rc=");
+      Serial.print(client.state());
+      delay(5000);
+    }
+  }
+}
+
+void loop() {
+  if (!client.connected()) reconnect();
+  client.loop();
+
+  int gasValue = analogRead(mq_pin);
+  float dustRatio = getDustRatio(pm_pin);
+
+  StaticJsonDocument<100> doc;
+  doc["MQ-1"] = gasValue;
+  doc["PM1"] = dustRatio;
+
+  char buffer[100];
+  serializeJson(doc, buffer);
+
+  if (client.publish("v1/devices/me/telemetry", buffer)) {
+    
+
+    Serial.print("MQ: ");
+    Serial.print(gasValue);
+    Serial.print(" ppm, PM: ");
+    Serial.print(dustRatio, 1);
+    Serial.println(" µg/m^3");
+
+  } else {
+    Serial.println("Failed to send data");
+  }
+
+  delay(5000);
+}
