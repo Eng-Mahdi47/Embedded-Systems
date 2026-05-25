@@ -1,1 +1,1 @@
-
+This project is an IoT-based air quality monitoring system consisting of two ESP32 nodes. Each node uses MQ-135 and PM2.5 sensors to measure air quality and particulate matter levels in real time, while the second node additionally includes an MQ-3 sensor for alcohol detection. All data is sent to a cloud dashboard for monitoring and visualization.
