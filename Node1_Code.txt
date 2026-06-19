@@ -3,8 +3,8 @@
 #include <ArduinoJson.h>
 
 // Networks connections
-const char* ssid = "SALAM-4G";
-const char* password = "M103@092";
+const char* ssid = "";
+const char* password = "";
 const char* tb_server = "thingsboard.cloud";
 const char* access_token = "d8bfsgS6YwSSagSRq7yl"; 
 
